@@ -130,8 +130,8 @@ start:
     mov ax, stack
     mov ss, ax
 
-   
-str_query:
+
+main_loop:
 	mov dx, offset input_line
 	mov ah, 0Ah
 	int 21h
@@ -144,18 +144,45 @@ str_query:
 	mov cl, byte ptr [si + 1]      		; line length
 	mov bp, cx							; bp = actual length of the written string
 	
+	cmp bp, 0
+	je exit
+	
+	; CRC16
+	push bp								; save	
+	call calc_crc16						; ax = result crc16
+	call htoi16	
+	
+	; print result
+	mov dx, offset invite_crc16
+	call str_print
+	mov dx, offset hex_str_1
+	call str_print
+	call new_line_print	
+	
+	
+	; CRC-32
+	pop bp								; restored real len string
+	
+	call calc_crc32		; dx:ax = result crc32
+	call htoi32
 
-; crc16	
-; crc = (crc >> 8) ^ Crc16Table[(crc & FFh) ^ *pcBlock++];
-crc16_func:
-	; bp - number of iterations per line
+	; print result
+	mov dx, offset invite_crc32
+	call str_print
+	mov dx, offset hex_str_2
+	call str_print
+	call new_line_print
+	
+	call exit
+
+	
+
+; crc16 = (crc >> 8) ^ Crc16Table[(crc & FFh) ^ *pcBlock++];
+calc_crc16:
 	mov ax, 0FFFFh
 	
-	cmp bp, 0
-	je finish_hash
-	
 	mov bx, offset input_line
-	add bx, 2					; pointer to the first character of the string
+	add bx, 2	
 
 	iter_over_str_1:
 	
@@ -166,28 +193,26 @@ crc16_func:
 		; the element's address = index * 2
 		
 		mov dx, ax 
-		
-		mov dl, al					; dl = lower byte
 		xor cx, cx
 		mov cl, byte ptr [bx]		; cl = current char
 		xor cl, dl					; cx = index of the element in the table			
 		
 		mov si, cx					; si = index in the table
 		shl si, 1
-		
-
-		shr ax, 8					
-		xor ax, word ptr crc16table[si]
+	
+		shr ax, 8		
+		mov di, offset crc16table
+		add di, si
+		xor ax, word ptr [di]
 		
 		inc bx						; skip to the next char
 		dec bp						; reducing the counter after processing
 		cmp bp, 0
 		jnz iter_over_str_1
-
+		ret							; return to main
 	
-finish_hash:	
-	; hex processing
-
+	
+htoi16:	
 	mov cx, 4			; iterations on our number
 	mov di, 0			; iterations on a hex string
 	
@@ -195,50 +220,21 @@ next_dig:
 	rol ax, 4
 	mov bx, ax			; saved a copy
 
-	and bx, 000Fh		
-	cmp bx, 10
-	jb below_num
-	 
-	add bx, 'A'
-	sub bx, 10
-	jmp insert_hexstr
-	
-below_num:
-	add bx, '0'
-	
-insert_hexstr:
-	; written to the line
-	mov dl, bl
-	mov byte ptr [hex_str_1 + di], dl
+	and bx, 000Fh	
+
+	call digit_to_hex					; bx = symbol
+	mov byte ptr [hex_str_1 + di], bl
 	inc di
 
 	; moving on to the next digit
 	loop next_dig
-	
-	mov dx, offset invite_crc16
-	call str_print
-	
-	mov dx, offset hex_str_1
-	call str_print
-	call new_line_print
-	jmp str_query32
+	ret
 
-	
 
-; crc32
 ; (crc >> 8) ^ Crc32Table[(crc ^ *pcBlock++) & 0xFF]
-str_query32:
-	mov si, offset input_line
-	xor cx, cx
-	mov cl, byte ptr [si + 1]
-	mov bp, cx
-	
-crc32_func:
+calc_crc32:
 	mov dx, 0FFFFh
 	mov ax, 0FFFFh
-	
-	cmp bp, 0
-	je finish_hash32
 	
 	mov bx, offset input_line
 	add bx, 2
@@ -260,16 +256,13 @@ crc32_func:
 		shl si, 2
 		
 		; (crc >> 8) 
-		mov cx, dx					; save the older part
-		shr ax, 8					; move the young part to the right
-		shl dx, 8					; move the  old  part to the left
-		or ax, dx
-		mov dx, cx
+		shrd ax, dx, 8
 		shr dx, 8
 
-		
-		xor ax, word ptr crc32table[si]
-		xor dx, word ptr crc32table[si + 2]
+		mov di, offset crc32table
+		add di, si
+		xor ax, word ptr [di]
+		xor dx, word ptr [di + 2]
 		
 		inc bx						; skip to the next char
 		dec bp						; reducing the counter after processing
@@ -279,77 +272,52 @@ crc32_func:
 		not ax
 		not dx	
 		
-finish_hash32:
-	; hex processing for 32b
-
+		ret							; return to main
+		
+		
+htoi32:
 	; DX:AX - high and low word
 	; first DX, then AX
-	push ax 			; saved the low word to the stack
-	
-	mov ax, dx			; start with the high word
-	mov cx, 4			; iterations on our number
 	mov di, 0			; iterations on a hex string
 	
-next_dig_high:
+	push ax 			; saved the low word to the stack
+	mov ax, dx
+	call word_to_hex
+	
+	pop ax
+	call word_to_hex
+	
+	ret					; return main_loop
+
+word_to_hex:	
+	mov cx, 4			; iterations on our number
+
+next_dig32:
 	rol ax, 4
 	mov bx, ax			; saved a copy
 
 	and bx, 000Fh		
-	cmp bx, 10
-	jb below_num_high
-	 
-	add bx, 'A'
-	sub bx, 10
-	jmp insert_hexstr_high
-	
-below_num_high:
-	add bx, '0'
-	
-insert_hexstr_high:
-	; written to the line
-	mov dl, bl
-	mov byte ptr [hex_str_2 + di], dl
+	call digit_to_hex
+	mov byte ptr [hex_str_2 + di], bl
 	inc di
 
 	; moving on to the next digit
-	loop next_dig_high
-	
-	; move on low word
-	mov cx, 4				; updated the counter
-	pop ax					; restored the value of ax
-	
-next_dig_low:
-	rol ax, 4
-	mov bx, ax			; saved a copy
-
-	and bx, 000Fh		
-	cmp bx, 10
-	jb below_num_low
+	loop next_dig32			
+	ret
+		
+		
+digit_to_hex:		; work with bx
+	cmp bl, 10
+	jb below_num
 	 
 	add bx, 'A'
 	sub bx, 10
-	jmp insert_hexstr_low
-	
-below_num_low:
+	ret
+below_num:
 	add bx, '0'
-	
-insert_hexstr_low:
-	; written to the line
-	mov dl, bl
-	mov byte ptr [hex_str_2 + di], dl
-	inc di
+	ret
+; end of digit_to_hex	
 
-	; moving on to the next digit
-	loop next_dig_low
-	; processed both parts
-	
-	mov dx, offset invite_crc32
-	call str_print
-	
-	mov dx, offset hex_str_2
-	call str_print
-	call new_line_print
-	call exit
 
 str_print:
 	mov ah, 09h
